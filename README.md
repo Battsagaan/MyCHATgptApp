@@ -1,119 +1,88 @@
-# Excel HR Star-Schema Pipeline
+# Mongolian Monthly Workforce Star-Schema Pipeline
 
-This application turns repeatable HR Excel extracts into persistent, Power BI-ready
-dimension and fact workbooks. It validates structure and values, rejects bad rows with
-reasons, preserves surrogate keys, applies SCD Type 1 updates, prevents duplicate facts,
-backs up masters, and commits verified workbooks transactionally.
+This application loads the exact 14-column Mongolian month-end employee file into an immutable workforce snapshot model, compares consecutive months, and creates workforce-flow and position/grade movement facts for Power BI.
 
-## Agreed design and assumptions
+## Model
 
-No real source workbook was supplied, so version 1 uses **only the ten headers explicitly
-provided in the request**. Change mappings in `config.py` when the real standardized
-workbook differs; business names are not embedded in processing code.
+**Dimensions:** `Dim_Employee`, `Dim_Department`, `Dim_Position`, `Dim_Grade`, `Dim_Employment_Type`, `Dim_Employee_Status`, `Dim_Movement_Type`, `Dim_Movement_Scenario`, and `Dim_Date`.
 
-### Architecture
+**Facts:**
 
-```text
-main.py -> pipeline.runner (orchestration)
-                   |-> storage.py (Excel adapter, backups, atomic commit)
-                   |-> cleaning.py / validation.py (quality boundary)
-                   |-> dimensions.py / facts.py (storage-independent rules)
-                   |-> logging_setup.py (file + terminal audit)
-config.py ---------+ (all mappings and business rules)
+* `Fact_Employee_Snapshot`: one employee per month end; unique business key `EmployeeKey + SnapshotDateKey`. Every accepted source employee is included, even unchanged employees.
+* `Fact_Workforce_Flow`: one detected status/new-hire movement event per employee.
+* `Fact_Position_Grade_Movement`: one employee comparison when department, position, grade, or employment type changed.
+
+The first month is a baseline and creates snapshot facts only. Later months compare with the latest prior snapshot. Existing historical snapshot rows are never updated, and the same file/month hash is skipped.
+
+## Exact input schema
+
+The `Data` worksheet must contain exactly: `Код`, `Нэр`, `Овог`, `Албан тушаалын нэр`, `Хэлтэс тасаг`, `Ажилд орсон огноо`, `Ажилласан жил`, `Ажилласан сар`, `Ажилтны төлөв`, `Ажилтны төрөл`, `Албан тушаалын зэрэглэл`, `Ажлаас гарсан огноо`, `Хүйс`, `Нас`.
+
+The complete source-to-target mapping, grade ranks/groups, status flags, movement codes, and movement scenarios are centralized in `config.py`. **Before first use**, confirm `SOURCE_SHEET`, `GRADE_RANK`, `GRADE_GROUPS`, and `STATUS_RULES` match your organization's real values. Unknown grade ranks are not guessed: changed unknown grades become `Requires Review`.
+
+Grade codes normalize confusable Cyrillic letters (for example `А` → `A` and `В` → `B`) before rank lookup.
+
+## Windows installation
+
+Install 64-bit Python 3.10+ and select **Add Python to PATH**. In Command Prompt:
+
+```bat
+cd /d C:\Users\YourName\Documents\excel_data_pipeline
+py -3 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Folders are `input/`, `master/`, `archive/`, `rejected/`, and `logs/`. Excel persistence
-is isolated in `storage.py`, so a future SQL repository can replace that adapter while
-retaining transformation logic.
+Place one `.xlsx` or Excel 97–2003 `.xls` file directly in:
 
-### Star schema and keys
+```text
+C:\Users\YourName\Documents\excel_data_pipeline\input\
+```
 
-| Target | Grain / business key | Surrogate key | Source mapping |
-|---|---|---|---|
-| `Dim_Employee` | `Emp_ID` | `Employee_Key` | `Emp_ID`, `Employee_Name`, `Employment_Type`, `Status` |
-| `Dim_Department` | `Department` | `Department_Key` | `Department` |
-| `Dim_Position` | `Position` | `Position_Key` | `Position` |
-| `Dim_Date` | one row per `Date` | `Date_Key` (`YYYYMMDD`) | generated from configured range |
-| `Fact_HR` | `Employee_Key`, `Event_Date`, `Movement_Type` | `Fact_Key` | dimension keys plus `Event_Date`, `Movement_Type`, `Hours`, `Amount` |
+Close the workbook in Excel. Run with the required month-end date:
 
-`Fact_HR` contains `Employee_Key`, `Department_Key`, `Position_Key`, and `Date_Key`,
-forming one-to-many relationships from each dimension. It also contains source filename,
-physical Excel row, load timestamp, and load ID for traceability.
+```bat
+.venv\Scripts\python.exe main.py --snapshot-date 2026-08-31
+```
 
-Assumptions:
+The date must be the last calendar day of the month. If `--snapshot-date` is omitted, the program prompts for it interactively. Excel temporary files beginning `~$` are ignored.
 
-* Worksheet name is `Data`; the first row contains headers.
-* A fact represents one employee movement type on one event date. If multiple legitimate
-  events can share this grain, expand the configured fact business key with an event ID.
-* Ambiguous slash dates are interpreted day-first; unambiguous U.S. dates are retried.
-* A numeric Excel cell cannot preserve a zero-prefix Excel discarded before Python reads
-  it. Store IDs as Excel text to retain leading zeroes; text IDs are preserved exactly.
-* Dimension attributes use the last valid incoming record per business key. SCD Type 1
-  overwrites changed non-key attributes, retains the surrogate and `Created_Date`, and
-  advances `Updated_Date`. The processor boundary permits a later Type 2 implementation.
-* Duplicate strategy defaults to `skip`. Duplicate keys inside a source and against the
-  master are omitted; `update` replaces matching fact attributes, and `error` aborts.
-* A successful file hash is skipped before transformation. A different file with an
-  already-loaded fact grain is still protected by the fact business key.
+### Safe dry-run preview
 
-## Install and run
+Before committing a month, run:
 
-1. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/).
-2. Create and activate a virtual environment.
-3. Install dependencies: `python -m pip install -r requirements.txt`.
-4. Put one or more `.xlsx` files in `input/`, each with a `Data` worksheet.
-5. Run `python main.py`.
+```bat
+.venv\Scripts\python.exe main.py --snapshot-date 2026-08-31 --dry-run
+```
 
-For a demonstration source containing 100 rows, run `python generate_sample.py` first.
-The first run automatically creates all master workbooks and `Load_History.xlsx`.
+Dry-run reads the real workbook, validates and cleans all 14 columns, detects duplicate
+employee codes, reports unknown grade ranks and statuses, lists rejected rows, previews
+new dimension members, and reconciles snapshot, workforce-flow, and position/grade
+movement counts. It does not back up, write, append, replace, or otherwise modify any
+master or fact workbook. A normal run is still required to commit the month.
 
-## Configuration
+## Outputs and safety
 
-Edit only `config.py` for folder locations, source sheet, expected/required/text/date/
-numeric columns, mappings, keys, date range, SCD mode, and duplicate behavior. Unexpected
-columns are fatal by default because structural drift must not be silent.
+Missing `input`, `master`, `archive`, `rejected`, and `logs` folders are created automatically. The successful first load creates one `.xlsx` file per dimension/fact plus `Load_History.xlsx` in `master`. Rejected records are written to `rejected`, logs to `logs`, and existing masters are copied to a timestamped `archive` folder before replacement.
 
-To add a dimension:
+Processing occurs in memory. Output workbooks are staged and verified before atomic replacement. A bad schema, invalid snapshot date, duplicate month, backward historical load, or failed save leaves existing master files unchanged. Duplicate `Код` values within one monthly file are rejected rather than arbitrarily selected.
 
-1. Add a `DIMENSION_CONFIG` entry with `surrogate_key`, `business_key`, and `columns`.
-2. Add its lookup in the fact's `dimension_references` using source key(s) and foreign key.
-3. Add the foreign key to the fact's `columns` and business key only if it defines grain.
+## Detection rules
 
-To add another fact table, add a `FACT_CONFIG` entry with its stable schema, grain, and
-dimension references. The current orchestrator processes configured facts uniformly.
+* New employee → `MEE000001`.
+* Active after terminated → rehire `MEE000003`.
+* Transition to terminated → `MEE000002`.
+* Transition to maternity/long sick leave → `MEE000005`/`MEE000006`.
+* Return from maternity/long sick leave → `MEE000007`/`MEE000008`.
+* Department, position, grade, and employment-type changes create a position/grade movement only when at least one relevant value changed.
+* Position plus grade-rank increase/decrease yields Promotion/Demotion (large changes yield Fast Track Promotion/Major Downgrade); grade-only change yields Grade Promotion/Grade Downgrade; department and position combinations yield organizational/functional scenarios; missing rank yields Requires Review.
 
-## Outputs and operational behavior
-
-* `master/`: stable Power BI tables (one header row, typed values, filters, frozen headers,
-  Excel tables, no merged cells).
-* `rejected/`: timestamped rejected rows containing `Validation_Status`, all accumulated
-  `Error_Reason` values, source file, and physical source row.
-* `archive/`: timestamped copy of existing masters immediately before each commit.
-* `logs/`: per-load detailed log and ETL summary.
-* `master/Load_History.xlsx`: hashes and row/status metrics for successful committed loads.
-
-All transformation happens in memory. Every final dimension key, business key, fact key,
-required field, and foreign key is checked. Workbooks are written to a staging directory,
-read back for verification, and only then atomically replace their corresponding masters.
-A schema, transformation, or integrity failure therefore leaves current masters unchanged.
-
-## Troubleshooting
-
-* **No input files**: place an `.xlsx` file directly in `input/`.
-* **Missing worksheet**: rename the worksheet to `Data` or edit `SOURCE_SHEET`.
-* **Missing/unexpected/duplicate headers**: correct the extract or intentionally update
-  configuration. The log lists every mismatch.
-* **Rejected values**: inspect the timestamped rejected workbook and its `Error_Reason`.
-* **File was skipped**: its SHA-256 already has a successful load-history record. This is
-  expected idempotency; disable hash skipping only when deliberately re-evaluating it.
-* **Duplicate fact error**: either fix the source grain, expand the business key, or choose
-  the configured `skip`/`update` policy.
-* **Master integrity failure**: restore from the latest `archive/` folder and do not edit
-  surrogate/business keys manually.
+The configured movement catalog also reserves `MEE000004` for validated external-transfer events. The source has no explicit movement/event column, so it is not auto-inferred merely from a department change.
 
 ## Tests
 
-Run `python -m pytest`. The suite covers first load (100 facts), same-file idempotency,
-new and existing employees, SCD Type 1 changes, invalid-row rejection, new-department key
-resolution, cross-file fact duplicate protection, and broken-schema transaction safety.
+```bat
+.venv\Scripts\python.exe -m pytest -q
+```
 
+Tests cover the Mongolian schema, baseline/second snapshots, unchanged staff, new hire, termination, rehire, both leave/return pairs, department/position/grade changes, promotion/demotion, unknown ranks, Cyrillic normalization, duplicate employee codes, replay idempotency, immutable history, transaction safety, folder creation, and the CLI.

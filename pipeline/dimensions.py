@@ -37,7 +37,9 @@ def process_dimension(source_df: pd.DataFrame, master_df: pd.DataFrame, spec: di
                 indexed.loc[changed_keys, "Updated_Date"] = now
                 updated = len(changed_keys)
             master = indexed.reset_index()
-    master = pd.concat([master, new_rows], ignore_index=True)[[sk, *columns, "Created_Date", "Updated_Date"]]
+    master = (new_rows.reset_index(drop=True) if master.empty else
+              pd.concat([master, new_rows], ignore_index=True))
+    master = master[[sk, *columns, "Created_Date", "Updated_Date"]]
     lookup = master[[*key_cols, sk]].copy()
     metrics = {"new": len(new_rows), "updated": updated, "existing": len(incoming) - len(new_rows) - updated}
     return master, lookup, metrics
@@ -52,4 +54,3 @@ def resolve_dimension_keys(source_df: pd.DataFrame, lookups: dict, dimension_con
         lookup = lookups[dim_name].rename(columns={lookup_sk: sk})
         result = result.merge(lookup, on=source_keys, how="left", validate="many_to_one")
     return result
-

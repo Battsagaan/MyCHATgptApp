@@ -31,7 +31,7 @@ def validate_rows(df: pd.DataFrame, conversion_errors: dict[str, pd.Series], cfg
         add(mask, f"Invalid {column}")
     # Every configured business key is mandatory, even if omitted from REQUIRED_COLUMNS.
     key_columns = set()
-    for table in (*cfg.DIMENSION_CONFIG.values(), *cfg.FACT_CONFIG.values()):
+    for table in (*getattr(cfg, "DIMENSION_CONFIG", {}).values(), *getattr(cfg, "FACT_CONFIG", {}).values()):
         key_columns.update(c for c in table["business_key"] if c in df.columns)
     for column in key_columns:
         add(df[column].isna(), f"Blank business key {column}")
@@ -63,4 +63,3 @@ def validate_integrity(tables: dict[str, pd.DataFrame], cfg) -> None:
                 errors.append(f"{name}.{fk}: orphan foreign keys")
     if errors:
         raise DataValidationError("Final integrity checks failed:\n- " + "\n- ".join(errors))
-

@@ -5,10 +5,15 @@ logs/*.log
 archive/*/
 rejected/*.xlsx
 input/*.xlsx
+input/*.xls
 master/*.xlsx
+master/*.xls
+tests/generated/
+tests/**/*.xls
+tests/**/*.xlsx
+tests/**/*.zip
 !input/.gitkeep
 !master/.gitkeep
 !archive/.gitkeep
 !rejected/.gitkeep
 !logs/.gitkeep
-

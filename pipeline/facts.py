@@ -31,7 +31,8 @@ def build_fact_table(resolved: pd.DataFrame, master: pd.DataFrame, spec: dict,
     sk = spec["surrogate_key"]
     start = int(master[sk].max()) + 1 if not master.empty else 1
     new_rows.insert(0, sk, range(start, start + len(new_rows)))
-    combined = pd.concat([master, new_rows], ignore_index=True)
+    combined = (new_rows.reset_index(drop=True) if master.empty else
+                pd.concat([master, new_rows], ignore_index=True))
     columns = [sk, *spec["columns"], "Source_File", "Source_Row_Number", "Load_Date", "Load_ID"]
     return combined[columns], {"new": len(new_rows), "duplicates": duplicate_count}
 
@@ -47,4 +48,3 @@ def create_date_dimension(start: str, end: str) -> pd.DataFrame:
         "Week_Number": iso.week.to_numpy(), "Day": dates.day,
         "Day_Name": dates.day_name(), "Is_Weekend": dates.dayofweek >= 5,
     })
-

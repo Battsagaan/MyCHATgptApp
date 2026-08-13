@@ -28,10 +28,12 @@ def parse_dates(series: pd.Series) -> tuple[pd.Series, pd.Series]:
     remaining = series.notna() & ~serial_mask
     if remaining.any():
         text = clean_text(series.loc[remaining])
-        parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+        parsed = pd.to_datetime(text, format="mixed", errors="coerce", dayfirst=True)
         retry = parsed.isna()
         if retry.any():
-            parsed.loc[retry] = pd.to_datetime(text.loc[retry], errors="coerce", dayfirst=False)
+            parsed.loc[retry] = pd.to_datetime(
+                text.loc[retry], format="mixed", errors="coerce", dayfirst=False
+            )
         output.loc[remaining] = parsed
     invalid = series.notna() & output.isna()
     return output.dt.normalize(), invalid
@@ -49,4 +51,3 @@ def clean_dataframe(df: pd.DataFrame, cfg) -> tuple[pd.DataFrame, dict[str, pd.S
         result[column] = pd.to_numeric(original, errors="coerce")
         errors[column] = original.notna() & result[column].isna()
     return result, errors
-

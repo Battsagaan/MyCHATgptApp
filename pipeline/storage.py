@@ -13,6 +13,17 @@ def inspect_source(path: Path, sheet: str) -> list[str]:
     """Read source headers without allowing pandas to hide duplicates."""
     if not path.exists():
         raise FileNotFoundError(f"Source file does not exist: {path}")
+    if path.suffix.lower() == ".xls":
+        # xlrd 2.x deliberately supports the legacy binary .xls format only.
+        import xlrd
+        workbook = xlrd.open_workbook(path, on_demand=True)
+        if sheet not in workbook.sheet_names():
+            workbook.release_resources()
+            raise MissingColumnError(f"Required worksheet '{sheet}' is absent from {path.name}")
+        worksheet = workbook.sheet_by_name(sheet)
+        headers = worksheet.row_values(0) if worksheet.nrows else []
+        workbook.release_resources()
+        return headers
     workbook = load_workbook(path, read_only=True, data_only=True)
     if sheet not in workbook.sheetnames:
         workbook.close()
@@ -23,7 +34,8 @@ def inspect_source(path: Path, sheet: str) -> list[str]:
 
 def load_source_file(path: Path, sheet: str) -> pd.DataFrame:
     """Load a validated source and retain the physical Excel row number."""
-    df = pd.read_excel(path, sheet_name=sheet, dtype=object)
+    engine = "xlrd" if path.suffix.lower() == ".xls" else "openpyxl"
+    df = pd.read_excel(path, sheet_name=sheet, dtype=object, engine=engine)
     df["Source_Row_Number"] = range(2, len(df) + 2)
     return df
 
@@ -32,17 +44,21 @@ def empty_table(columns: list[str]) -> pd.DataFrame:
 
 def load_master_table(path: Path, columns: list[str]) -> pd.DataFrame:
     """Load an existing master or return its configured empty shape."""
-    if not path.exists():
+    # Prefer the pipeline's current .xlsx output, but migrate a same-named
+    # legacy .xls master automatically when that is all the user has supplied.
+    actual_path = path if path.exists() else path.with_suffix(".xls")
+    if not actual_path.exists():
         return empty_table(columns)
     try:
         # Object dtype is essential for natural keys such as "000001"; pandas'
         # type inference would otherwise turn them into integer 1 on reload.
-        frame = pd.read_excel(path, sheet_name="Data", dtype=object)
+        engine = "xlrd" if actual_path.suffix.lower() == ".xls" else "openpyxl"
+        frame = pd.read_excel(actual_path, sheet_name="Data", dtype=object, engine=engine)
     except Exception as exc:
-        raise MasterDataError(f"Cannot read master table {path}: {exc}") from exc
+        raise MasterDataError(f"Cannot read master table {actual_path}: {exc}") from exc
     missing = set(columns) - set(frame.columns)
     if missing:
-        raise MasterDataError(f"Master {path.name} is missing columns: {sorted(missing)}")
+        raise MasterDataError(f"Master {actual_path.name} is missing columns: {sorted(missing)}")
     return frame[columns]
 
 def write_excel_table(df: pd.DataFrame, path: Path, table_name: str) -> None:
@@ -66,7 +82,9 @@ def write_excel_table(df: pd.DataFrame, path: Path, table_name: str) -> None:
 
 def backup_master_files(master_folder: Path, archive_folder: Path, stamp: str, names: list[str]) -> Path | None:
     """Copy existing masters immediately before a changing commit."""
-    existing = [master_folder / f"{name}.xlsx" for name in names if (master_folder / f"{name}.xlsx").exists()]
+    existing = []
+    for name in names:
+        existing.extend(path for path in (master_folder / f"{name}.xlsx", master_folder / f"{name}.xls") if path.exists())
     if not existing:
         return None
     destination = archive_folder / stamp
