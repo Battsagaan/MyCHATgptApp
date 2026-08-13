@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+logs/*.log
+archive/*/
+rejected/*.xlsx
+input/*.xlsx
+master/*.xlsx
+!input/.gitkeep
+!master/.gitkeep
+!archive/.gitkeep
+!rejected/.gitkeep
+!logs/.gitkeep
+
